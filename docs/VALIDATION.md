@@ -1,76 +1,19 @@
-# 验收合同 / Validation contract
+# 0.5.20 验证
 
-## Automated checks
+验证日期：2026-10-07。宿主：DSH 0.2.1-alpha.1，macOS，Node.js 22+。
 
-Run from the repository root:
+## 真实宿主
 
-```bash
-npm run validate
-npm pack --dry-run
-```
+使用独立 DSH_HOME 和 Web profile 加载仓库包。实际验证组合包注册、原生压缩服务挂载、已认证连接上的插件请求、设置读取保存、旧版本保存拒绝、模型目录保留和历史导入。测试过程没有使用用户的生产接入配置。
 
-`npm run validate` performs syntax/package checks and the Node test suite. The test runner supplies peer stubs through an in-memory ESM loader. It never creates, replaces, or deletes `node_modules`.
+## 可重复测试
 
-The current suite verifies:
+`npm run validate` 检查源码语法，并运行 `test/standalone*.test.js`。宿主服务与压缩生命周期测试加载真实 DSH SessionStore、消息投影、Basic 和 Cordis；模型流由本地确定输出提供，避免收费及模型随机性。
 
-- versioned marker round trips and corruption rejection;
-- cyclic/nested content traversal safety;
-- human summary text does not contain marker metadata;
-- only complete successful start/summary/checkpoint/end lifecycles become reconstructable nodes;
-- incomplete, failed, and mismatched lifecycles are ignored;
-- incremental replay advances through ordinary tail events without skipping a lifecycle that completes across calls;
-- parent/child summary DAG reconstruction accepts children only from trusted checkpoint-source events;
-- exact source sequence preservation;
-- expansion through a single very large event without middle truncation;
-- sparse or reordered event arrays resolved by `event.seq`;
-- raw-event and summary search scopes;
-- Unicode substring fallback for Chinese queries;
-- transactional edge/FTS replacement;
-- `(session_id, node_id)` fork isolation;
-- read-only doctor behavior and explicit repair/rebuild;
-- shared `max_chars` enforcement across multi-node expansion;
-- cycle-safe DAG levels with shared descendants;
-- complete six-tool registration;
-- tools are bound to the calling live agent session;
-- lifecycle disposal closes SQLite;
-- post-commit index failures do not break the session event path;
-- the bundled patch never auto-mounts a second compaction provider.
+覆盖后台归档完整性、真实工具消息边界、20K 预算关段、跨进程设置竞争、跨宿主任务租约、取消后迟到结果拒绝、摘要单独运行不改活动上下文、原生与接管切换、准备时不替换、摘要树还原，以及原生界面注册与交互。
 
-## Real DSH profile gate
+旧 `test/` 中没有 standalone 前缀的文件保留为 0.3 历史测试，现行验证入口明确使用新版本测试。旧浏览器展示页只作历史资料，不作为现行运行入口，也不包含在安装包中。
 
-Automated contract tests are necessary but not sufficient. Before enabling the compaction provider in a primary profile, use a disposable isolated profile and pass all of these checks:
+## 范围
 
-1. Confirm only one physical copy of DSH core/runtime packages is resolved in the profile.
-2. Load the tools-only bundle with the engine disabled.
-3. Open a disposable session and confirm all six tools are visible.
-4. Call `lcm_doctor` with `repair: false`; confirm it reports without mutating SQLite. Use `repair: true` only when a rebuild is intended.
-5. 替换而不是追加现有压缩提供方为 `SuperLcm`。
-Replace, rather than append, the existing compaction provider with `SuperLcm`.
-6. Generate enough harmless context to trigger one real DSH compaction.
-7. Inspect the full committed lifecycle (`start`, marker-bearing `summary`, checkpoint replacement, successful `end`).
-8. Run `lcm_reindex` and confirm one node is indexed; append ordinary events, rerun twice, and confirm the second rerun scans zero events past the recorded scan cursor.
-9. Use `lcm_grep` to find a phrase that existed only before compaction.
-10. Use `lcm_expand` until `next` is null and byte-compare the recovered serialized event with the canonical session event.
-11. Trigger a second compaction that contains the first checkpoint and confirm a parent-to-child edge appears.
-12. Fork the session, produce a fork-specific compaction, and verify parent/fork descriptions stay isolated.
-13. Restart the profile, rerun `lcm_doctor`, and confirm the index survives.
-14. Stop DSH cleanly and confirm WAL files settle without integrity errors.
-
-## Hard failures
-
-Do not enable the plugin in the primary profile if any of these occur:
-
-- two active `ctx.compaction` providers;
-- duplicate copies of DSH core packages in one runtime;
-- a committed summary lacks a marker;
-- source event sequences cannot be resolved exactly;
-- `lcm_expand` skips a section of a large event;
-- a fork overwrites the parent namespace;
-- SQLite failure interrupts the DSH session transaction;
-- restart changes or loses the canonical DSH session log;
-- the plugin edits/deletes raw historical events.
-
-## Current certificate boundary
-
-`0.3.0-alpha.9` has an automated source-level certificate on Windows, Linux, and macOS CI; the profile certificate remains the real runtime gate.
-`0.3.0-alpha.9` 在 Windows、Linux、macOS CI 上进行源码级自动测试；profile 证书仍以真实运行时验收为准。 A real DSH desktop/profile Agent-loop certificate must be produced on the target installation and pinned to its DSH version and profile manifest.
+真实宿主检查验证服务接线。界面交互采用实际客户端代码和本地连接响应测试，尚未取得真实 Chrome 截图验收。摘要质量和模型供应商可用性需由实际使用继续判断。Windows/Linux CI 配置已包含，但本机不会代替远端执行结果。

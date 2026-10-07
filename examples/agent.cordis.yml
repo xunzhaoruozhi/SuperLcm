@@ -1,33 +1,3 @@
-# 仅供示例：请复制到新的 preset id 后再编辑。
-# Example only: copy this under a NEW preset id before editing.
-# 不要在原有压缩提供方旁边再添加第二个。
-# Do not add a second compaction provider beside the original one.
-- id: compaction
-  name: cordis:group
-  group: true
-  isolate:
-    compaction: true
-    toolResultPruner: true
-  config:
-    - id: SuperLcm-compaction
-      name: SuperLcm
-      config:
-        # 主路由必须明确；可选备用路由只在主路由失败后重试一次。
-        # The primary route is explicit; the optional backup is tried once after failure.
-        summarizationProvider: openai
-        summarizationModel: gpt-5.6-sol
-        fallbackSummarizationProvider: anthropic
-        fallbackSummarizationModel: claude-sonnet-4-5
-        foldTiming: background
-        tailCount: 24
-        minRetainTokens: 32000
-        pressureFoldTokens: 20000
-        foldBatchTokens: 64000
-        softActiveTokens: 160000
-        hardActiveTokens: 220000
-
-    - id: command-compact
-      name: '@deepseek-ai/dsh-command-compact'
-
-    - id: tool-result-pruner
-      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+# 自定义 agent 不再单独挂载 SuperLcm 压缩引擎。
+# 在 profile 安装本包并使用默认组合包，由插件页管理接管。
+[]

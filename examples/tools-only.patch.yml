@@ -1,4 +1,3 @@
-# 仅挂工具的默认组合包补丁 / Tools-only patch for the default bundle.
-- insert:
-    - id: SuperLcm-tools
-      name: SuperLcm/tool
+# 完整组合包默认提供全部召回工具，且压缩接管默认关闭。
+# 历史 tools-only 接入请更新到组合包，避免重复注册工具。
+[]

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.20 — 2026-10-07
+
+- Rebuild as a DSH-only plugin with native conversations, summary and optional compaction settings.
+- Port the latest ratio-based compaction engine and detached hierarchical summary policy.
+- Preserve the old database path and recall tools; archive complete structured originals.
+- Default to native DSH compaction, with independent explicit summary and compaction models.
+- Fix actual nested tool messages, source-budget boundaries, pending capture scheduling and cross-process settings writes.
+- Validate on real DSH 0.2.1-alpha.1 and add standalone runtime, archive and UI regression tests.
+
+## Historical releases
+
+
+
 ## 未发布 / Unreleased
 
 - 新增 `scripts/preflight-upgrade.mjs`:dsh 升级前的试飞闸。把候选版本装进隔离目录(不动现役),用「契约面 + 差分测试 + 组合挂载」三层检查,只报候选相对现役**新增**的问题。方法核心是差分:同一套检查同时跑基线与候选,绝对判定会把「测试原本配桩写」的环境性失败误报成 breaking change(实测假警报两次)。

@@ -1,5 +1,10 @@
 import { isCompactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import { contentBlocksToText, extractMarkers, markerFromSummary, stripRecallMetadata } from './marker.js'
+import { preparedTreeNodes } from './prepared-tree.js'
+import { semanticLevel } from './tree-semantics.js'
+import { checkpointMatches, summaryIdentity, legacyIdentities } from './legacy-checkpoints.js'
+import { isDeepStrictEqual } from 'node:util'
+const historicalRepair = new WeakMap()
 
 function clampInteger(value, fallback, min, max) {
   if (!Number.isSafeInteger(value)) return fallback
@@ -57,6 +62,7 @@ function committedCompactionRecords(events) {
   const active = new Map()
   const committed = []
   const ordered = [...events].sort((left, right) => (left?.seq ?? 0) - (right?.seq ?? 0))
+  const eventSeqs = new Set(ordered.map(event => event.seq))
   for (const event of ordered) {
     const id = compactionIdOf(event)
     if (event?.type === 'compaction/start' && id !== null) {
@@ -68,7 +74,7 @@ function committedCompactionRecords(events) {
       if (state !== undefined && state.summary === null) state.summary = event
       continue
     }
-    if (event?.type === 'user/message' && isCompactCheckpointSource(event.data?.source)) {
+    if (event?.type === 'user/message' && event.data?.source && isCompactCheckpointSource(event.data.source)) {
       const checkpointId = typeof event.data.source.compactionId === 'string' ? event.data.source.compactionId : null
       const state = checkpointId === null ? undefined : active.get(checkpointId)
       const checkpointMarker = markerFromSummary(event.data?.content)
@@ -78,11 +84,13 @@ function committedCompactionRecords(events) {
       if (state !== undefined
         && state.summary !== null
         && event.surfaceOp?.op === 'replace'
-        && checkpointMarker !== null
-        && summaryMarker !== null
-        && checkpointMarker.id === summaryMarker.id
+        && checkpointMatches(state.summary.data?.summary, event.data?.content)
+        && ((checkpointMarker === null && summaryMarker === null)
+          || (checkpointMarker !== null && summaryMarker !== null && checkpointMarker.id === summaryMarker.id))
         && Array.isArray(shadowedSeqs)
-        && shadowedSeqs.every(Number.isSafeInteger)
+        && shadowedSeqs.length > 0
+        && new Set(shadowedSeqs).size === shadowedSeqs.length
+        && shadowedSeqs.every(seq => Number.isSafeInteger(seq) && seq >= 0 && seq < state.summary.seq && eventSeqs.has(seq))
         && Array.isArray(event.sourceEventSeqs)
         && event.sourceEventSeqs.includes(state.start.seq)
         && event.sourceEventSeqs.includes(state.summary.seq)
@@ -133,32 +141,35 @@ export function committedCompactionSummary(session, endEvent) {
   return record?.summary ?? null
 }
 
-function trustedCheckpointNodeIds(session, sourceSeqs) {
-  const eventsBySeq = eventMapOf(sessionEvents(session))
+function trustedCheckpointNodeIds(sessionId, events, records, sourceSeqs, identities) {
+  const eventsBySeq = eventMapOf(events)
+  const committed = new Map(records.map(record => [record.checkpoint.seq, summaryIdentity(sessionId, record.summary, identities)]))
   return [...new Set(sourceSeqs.flatMap((seq) => {
     const source = eventsBySeq.get(seq)
-    if (source?.type !== 'user/message' || !isCompactCheckpointSource(source.data?.source)) return []
+    if (source?.type !== 'user/message' || !source.data?.source || !isCompactCheckpointSource(source.data.source)) return []
     const marker = markerFromSummary(source.data?.content)
-    return marker === null ? [] : [marker.id]
+    return marker === null ? committed.has(seq) ? [committed.get(seq)] : [] : [marker.id]
   }))]
 }
 
-export function nodeFromCompactionEvent(session, event) {
+export function nodeFromCompactionEvent(session, event, context) {
   if (event?.type !== 'compaction/summary') return null
   const marker = markerFromSummary(event.data?.summary)
-  if (marker === null) return null
+  const events = context?.events ?? sessionEvents(session), records = context?.records ?? committedCompactionRecords(events)
+  if (marker === null && !records.some(record => record.summary.seq === event.seq)) return null
+  const sessionId = sessionIdOf(session)
   const sourceSeqs = Array.isArray(event.data?.shadowedSeqs)
     ? event.data.shadowedSeqs.filter(Number.isSafeInteger)
     : []
   return {
-    sessionId: sessionIdOf(session),
-    nodeId: marker.id,
+    sessionId,
+    nodeId: summaryIdentity(sessionId, event, context?.identities),
     compactionId: String(event.data?.compactionId ?? ''),
     summarySeq: event.seq,
     createdAt: Number.isFinite(event.time) ? event.time : Date.now(),
     summary: event.data?.summary ?? [],
     summaryText: stripRecallMetadata(contentBlocksToText(event.data?.summary ?? [])),
-    childIds: trustedCheckpointNodeIds(session, sourceSeqs),
+    childIds: trustedCheckpointNodeIds(sessionId, events, records, sourceSeqs, context?.identities),
     sourceSeqs,
     shadowedTokenCount: Number.isFinite(event.data?.shadowedTokenCount)
       ? event.data.shadowedTokenCount
@@ -166,13 +177,32 @@ export function nodeFromCompactionEvent(session, event) {
     provider: typeof event.data?.provider === 'string' ? event.data.provider : null,
     model: typeof event.data?.model === 'string' ? event.data.model : null,
     status: 'ready',
+    kind: event.data?.summaryTreeKind ?? null,
   }
 }
 
-export function indexCompactionEvent(store, session, event) {
-  const node = nodeFromCompactionEvent(session, event)
+function writeCompactionTree(store, session, event, context, repairOnly = false) {
+  if (!context) {
+    const events = sessionEvents(session), records = committedCompactionRecords(events)
+    context = { events, records, identities: legacyIdentities(store, sessionIdOf(session), records) }
+  }
+  const node = nodeFromCompactionEvent(session, event, context)
   if (node === null) return null
-  return store.upsertNode(node)
+  const tree = preparedTreeNodes(session, event, node, store)
+  let changed = 0
+  for (const item of tree) {
+    const existing = repairOnly ? store.getNode(item.sessionId, item.nodeId) : null
+    if (existing) {
+      if (!isDeepStrictEqual(existing.summary, item.summary)) throw Error('Previously indexed DSH summary changed')
+      if (isDeepStrictEqual(existing.childIds, item.childIds) && isDeepStrictEqual(existing.sourceSeqs, item.sourceSeqs)) continue
+      store.upsertNode({ ...existing, childIds: item.childIds, sourceSeqs: item.sourceSeqs }); changed++
+    } else { store.upsertNode(item); changed++ }
+  }
+  return { node: store.getNode(node.sessionId, node.nodeId), changed }
+}
+
+export function indexCompactionEvent(store, session, event) {
+  return writeCompactionTree(store, session, event)?.node ?? null
 }
 
 export function reindexSession(store, session, { rebuild = false } = {}) {
@@ -182,9 +212,14 @@ export function reindexSession(store, session, { rebuild = false } = {}) {
   const afterSeq = rebuild ? -1 : store.indexCursor(sessionId)
   const pendingEvents = events.filter(event => Number.isSafeInteger(event?.seq) && event.seq > afterSeq)
   const hasNewEnd = pendingEvents.some(event => event.type === 'compaction/end')
-  const committed = hasNewEnd
-    ? committedCompactionRecords(events).filter(record => record.end.seq > afterSeq)
+  let repaired = historicalRepair.get(store)
+  if (!repaired) historicalRepair.set(store, repaired = new Set())
+  const repairHistory = !repaired.has(sessionId)
+  const records = hasNewEnd || repairHistory ? committedCompactionRecords(events) : []
+  const committed = hasNewEnd || repairHistory
+    ? records.filter(record => repairHistory || record.end.seq > afterSeq)
     : []
+  const identities = legacyIdentities(store, sessionId, records)
   let markers = 0
   let indexed = 0
   let failedEndSeq = null
@@ -192,8 +227,8 @@ export function reindexSession(store, session, { rebuild = false } = {}) {
   for (const { summary: event, end } of committed) {
     markers += 1
     try {
-      indexCompactionEvent(store, session, event)
-      indexed += 1
+      const result = writeCompactionTree(store, session, event, { events, records, identities }, end.seq <= afterSeq)
+      if (result?.changed) indexed += 1
     } catch (error) {
       failedEndSeq = end.seq
       errors.push({ seq: event.seq, error: error instanceof Error ? error.message : String(error) })
@@ -206,6 +241,7 @@ export function reindexSession(store, session, { rebuild = false } = {}) {
     cursor = pendingEvents.reduce((safe, event) => event.seq < failedEndSeq && event.seq <= cursor ? Math.max(safe, event.seq) : safe, afterSeq)
   }
   if (cursor > afterSeq) store.setIndexCursor(sessionId, cursor)
+  if (!errors.length) repaired.add(sessionId)
   return { sessionId, afterSeq, scanned: pendingEvents.length, markers, indexed, errors }
 }
 
@@ -243,19 +279,7 @@ function requireNode(store, sessionId, nodeId) {
  * 对损坏的索引保持环安全 / Corruption-safe for damaged indexes.
  */
 export function nodeLevel(store, sessionId, nodeId) {
-  const visiting = new Set()
-  const memo = new Map()
-  const levelOf = (id) => {
-    if (memo.has(id)) return memo.get(id)
-    if (visiting.has(id)) return 1
-    visiting.add(id)
-    const children = store.childrenOf(sessionId, id)
-    const level = children.length === 0 ? 1 : 1 + Math.max(...children.map(levelOf))
-    visiting.delete(id)
-    memo.set(id, level)
-    return level
-  }
-  return levelOf(nodeId)
+  return semanticLevel(store, sessionId, nodeId)
 }
 
 export function describeNode(store, session, nodeId) {
@@ -410,12 +434,22 @@ export function doctorSession(store, session) {
   const invalidSources = []
   const events = sessionEvents(session)
   const eventSeqs = new Set(events.map(event => event?.seq).filter(Number.isSafeInteger))
-  for (const { summary: event } of committedCompactionRecords(events)) {
-    const marker = markerFromSummary(event.data?.summary)
-    if (marker === null) continue
-    markers.push({ seq: event.seq, id: marker.id })
-    if (markerIds.has(marker.id)) duplicates.push(marker.id)
-    markerIds.add(marker.id)
+  const records = committedCompactionRecords(events)
+  const identities = legacyIdentities(store, sessionId, records)
+  for (const { summary: event } of records) {
+    const id = summaryIdentity(sessionId, event, identities)
+    markers.push({ seq: event.seq, id })
+    if (markerIds.has(id)) duplicates.push(id)
+    try {
+      const root = nodeFromCompactionEvent(session, event, { events, records, identities })
+      for (const node of preparedTreeNodes(session, event, root, store)) {
+        if (markerIds.has(node.nodeId) && node.nodeId !== id) duplicates.push(node.nodeId)
+        markerIds.add(node.nodeId)
+      }
+    } catch {
+      invalidSources.push({ summarySeq: event.seq, reason: 'invalid prepared summary tree' })
+      markerIds.add(id)
+    }
     const sourceSeqs = event.data?.shadowedSeqs ?? []
     for (const seq of sourceSeqs) {
       if (!Number.isSafeInteger(seq) || !eventSeqs.has(seq)) {

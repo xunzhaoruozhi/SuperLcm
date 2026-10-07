@@ -25,6 +25,22 @@ function totalTokenCount(nodes) {
 
 function tailBoundary(pricedNodes, surfaceSeqs, options) {
   const firstFoldableIndex = options.firstFoldableIndex ?? 0
+  if (options.retainTokenBudget && options.minRetainTokens > 0) {
+    let keepFromIdx = pricedNodes.length, keptNodes = 0, keptTokens = 0, groupTokens = 0
+    for (let index = pricedNodes.length - 1; index >= firstFoldableIndex; index -= 1) {
+      groupTokens += tokenCountOf(pricedNodes[index])
+      if (!(options.isBalancedBefore?.(surfaceSeqs[index]) ?? true)) continue
+      // Keep the latest complete group, but do not drag another oversized
+      // older tool group into the tail merely to fill the final few tokens.
+      if (keptNodes > 0 && keptTokens + groupTokens > options.minRetainTokens) break
+      keepFromIdx = index
+      keptNodes = pricedNodes.length - index
+      keptTokens += groupTokens
+      groupTokens = 0
+      if (keptTokens >= options.minRetainTokens) break
+    }
+    return { keepFromIdx, keptNodes, keptTokens }
+  }
   let keepFromIdx = pricedNodes.length
   let keptNodes = 0
   let keptTokens = 0
@@ -64,7 +80,7 @@ export function selectRollingRange(pricedNodes, surfaceSeqs, options = {}) {
     softActiveTokens + 1,
   )
   const activeTokens = nonNegativeInteger(options.activeTokens, totalTokenCount(pricedNodes))
-  const hardPressure = activeTokens >= hardActiveTokens
+  const hardPressure = options.forceHard === true || activeTokens >= hardActiveTokens
   const firstFoldableIndex = Math.min(
     nonNegativeInteger(options.firstFoldableIndex, 0),
     pricedNodes.length,
@@ -75,6 +91,7 @@ export function selectRollingRange(pricedNodes, surfaceSeqs, options = {}) {
     minRetainTokens,
     firstFoldableIndex,
     isBalancedBefore: options.isBalancedBefore,
+    retainTokenBudget: options.retainTokenBudget,
   })
 
   let tailCountRelaxed = false
@@ -88,6 +105,16 @@ export function selectRollingRange(pricedNodes, surfaceSeqs, options = {}) {
     tailCountRelaxed = boundary.keepFromIdx > firstFoldableIndex
   }
 
+  // Freeze the eligible end at the switch threshold. New messages must not
+  // keep extending an in-flight compression cycle.
+  if (Number.isSafeInteger(options.lastFoldableIndex)) {
+    boundary.keepFromIdx = Math.min(boundary.keepFromIdx, options.lastFoldableIndex + 1)
+  }
+
+  if (Number.isSafeInteger(options.protectedFromIndex)) {
+    boundary.keepFromIdx = Math.min(boundary.keepFromIdx, options.protectedFromIndex)
+    while (boundary.keepFromIdx > firstFoldableIndex && !(options.isBalancedBefore?.(surfaceSeqs[boundary.keepFromIdx]) ?? true)) boundary.keepFromIdx--
+  }
   if (boundary.keepFromIdx <= firstFoldableIndex) return null
 
   let foldTokens = 0
@@ -101,20 +128,34 @@ export function selectRollingRange(pricedNodes, surfaceSeqs, options = {}) {
     reason = 'hard-cap'
   } else if (activeTokens >= softActiveTokens && foldTokens >= pressureFoldTokens) {
     reason = 'soft-cap'
-  } else if (foldTokens >= foldBatchTokens) {
+  } else if (foldTokens >= positiveInteger(options.prepareMinimumTokens, foldBatchTokens)) {
     reason = 'background-batch'
   } else {
     return null
   }
 
+  // Prepare bounded, contiguous batches without changing the live surface.
+  // The engine accumulates them until the configured switch threshold.
+  let batchTokens = 0
+  let endIndex = boundary.keepFromIdx - 1
+  for (let index = firstFoldableIndex; index < boundary.keepFromIdx; index += 1) {
+    batchTokens += tokenCountOf(pricedNodes[index])
+    if (batchTokens >= foldBatchTokens && (options.isBalancedAfter?.(surfaceSeqs[index]) ?? true)) {
+      endIndex = index
+      foldTokens = batchTokens
+      break
+    }
+  }
+
   return {
     start: surfaceSeqs[firstFoldableIndex],
-    end: surfaceSeqs[boundary.keepFromIdx - 1],
+    end: surfaceSeqs[endIndex],
     foldTokens,
     tailNodes: pricedNodes.length - boundary.keepFromIdx,
     tailTokens: boundary.keptTokens,
     tailCountRelaxed,
     activeTokens,
     reason,
+    eligibleEnd: surfaceSeqs[boundary.keepFromIdx - 1],
   }
 }

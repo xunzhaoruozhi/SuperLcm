@@ -1,37 +1,4 @@
-# 仅供说明，不要直接并列添加到已有压缩提供方旁边。
-# ILLUSTRATIVE ONLY: do not append this beside an existing compaction provider.
-# 在实际 profile 补丁中，找到现有压缩节点并将插件名改为 SuperLcm，
-# 保留其 id、隔离边界和已验证的基础配置。
-# In the actual profile patch, change the existing node's plugin name to SuperLcm,
-# preserving its id, isolation boundary, and validated base configuration.
-#
-# 以下数值是长期 GPT-5.6 Sol Worker 的起始默认值。
-# The values below are starting defaults for a long-lived GPT-5.6 Sol worker.
-# 小上下文模型应按比例降低活动上下文上限。
-# Smaller-context models should use proportionally smaller active-context caps.
-
-- insert:
-    - id: SuperLcm-engine
-      name: SuperLcm
-      disabled: true
-      config:
-        mode: rolling
-        # 主路由必须明确；可选备用路由只在主路由失败后重试一次。
-        # The primary route is explicit; the optional backup is tried once after failure.
-        # 两者都不会回退到当前 Agent。 / Neither route falls back to the current Agent.
-        summarizationProvider: openai
-        summarizationModel: gpt-5.6-sol
-        fallbackSummarizationProvider: anthropic
-        fallbackSummarizationModel: claude-sonnet-4-5
-        tailCount: 24
-        minRetainTokens: 32000
-        pressureFoldTokens: 20000
-        foldBatchTokens: 64000
-        softActiveTokens: 160000
-        hardActiveTokens: 220000
-        foldTiming: background
-
-# 开发期间保持禁用；启用前确认 ctx.compaction 只剩一个提供方。
-# 开发期间保持禁用；将 disabled 改为 false 前确认只剩一个 ctx.compaction 提供方。
-# Keep disabled during development; verify only one ctx.compaction provider
-# remains before setting disabled: false.
+# 0.5.20：在 DSH 插件页开启「压缩接管」并选择模型。
+# 配置持久化在数据库旁的 settings.json，不再追加第二个压缩节点。
+# 默认组合包已提供完整接入；本示例无额外补丁。
+[]

@@ -1,108 +1,27 @@
-# 架构 / Architecture
+# 独立版架构
 
-## Source-of-truth rule
+DSH 宿主只加载一个 `SuperLcm` 组合包。组合包保留并禁用原生压缩配置节点，在相同隔离边界内挂载可切换的压缩控制器。接管关闭时由实际 DSH Basic 实现工作，接管开启后才切换 SuperLcm 引擎。
 
-```text
-DSH append-only session event log
-        │
-        ├── raw user / assistant / tool events
-        ├── committed compaction summary events
-        └── surface replacement metadata
-                 │
-                 ▼
-       SuperLcm
-        ├── stable recall marker in each summary
-        ├── summary DAG edges
-        ├── exact source event sequence pointers
-        └── derived SQLite search index
-```
+## 两条摘要路径
 
-The DSH log is authoritative. SQLite may be deleted and rebuilt. The plugin never edits or deletes historical DSH events.
+后台归档订阅 DSH 事件，完整保存到 SQLite 的 `sl_events`。回合结束或用户显式请求时，在 `sl_nodes` 建立独立摘要树。此路径不会替换会话上下文。
 
-## Compaction path
+接管引擎独立保存准备中的草稿，按实际输入容量和用户触发比例固定压缩范围。树准备完成后一次提交，新增尾部保持原文，进入下一轮。原有压缩索引在 `lcm_*` 表，旧库可继续召回。
 
-`SuperLcmCompactionEngine` 继承官方 `BasicCompactionEngine`。手动压缩完整继承宿主的 `compactNow(agent, signal, sourceCommandId)`；自动路径则使用非阻塞 rolling worker。
-`SuperLcmCompactionEngine` subclasses the official `BasicCompactionEngine`. Manual compaction inherits the complete host `compactNow(agent, signal, sourceCommandId)` contract; automatic compaction uses a non-blocking rolling worker:
+两条路径共享模型注册表和原文，但节点分别标记。开启两种功能会产生各自的摘要请求，不宣称两条摘要树完全复用。
 
-1. Keep the leading system message and committed checkpoint prefix immutable.
-2. Snapshot a balanced raw-history span after that prefix.
-3. For detached rolling work, accept child node ids only from events whose source passes DSH `isCompactCheckpointSource`; arbitrary user-authored marker text is never trusted as a DAG edge.
-4. Summarize on the explicitly configured provider/model with an independent abort controller.
-5. Generate a fresh UUID node id and append the versioned recall envelope.
-6. Atomically write `compaction/start`, `compaction/summary`, the checkpoint replacement `user/message`, and successful `compaction/end` only if the selected span is still stable.
-7. The live listener indexes only on `compaction/end`, after correlating the complete successful lifecycle.
+## 原文与边界
 
-This sequencing matters: an incomplete, failed, cancelled, or mismatched transaction must not enter the derived index merely because an LLM returned text.
+归档以会话标识和事件序号定位，拒绝身份变化、历史覆盖和原文断序。非消息事件也完整保存。摘要选择有效原文，跳过真正的压缩检查点。
 
-## Marker format
+工具组按真实 DSH 的 assistant 消息内容、tool/call、嵌套 tool/result 消息配对。普通原文在越过目标预算前关段，完整工具组可能超过分块目标。超长事件的摘要输入明确标记省略并附原文编号，归档原文完整保留。
 
-The marker is an HTML comment:
+摘要合并使用相邻同层节点、最少段数、正文积累门槛和完整输入预算。父节点持有全部子节点标识及原文编号。小尾段保持原文等待。
 
-```text
-<!-- dsh-lcm:v1:<base64url-json> -->
-```
+## 配置与取消
 
-Decoded payload:
+`settings.json` 保存一处配置真源。跨进程 SQLite 写锁串行化版本校验和原子文件替换，旧配置写入备份。摘要任务有跨宿主租约，修改配置会取消当前模型请求，写入摘要前再次核对任务归属和配置版本。迟到结果不会落库。
 
-```json
-{
-  "v": 1,
-  "id": "<stable node id>",
-  "children": ["<older summary node id>"]
-}
-```
+## 原生界面
 
-Ids are validated, duplicate child ids are removed, corrupt or unknown-version markers are ignored, and human-facing search text strips the envelope.
-
-## Derived schema
-
-SQLite tables:
-
-- `lcm_nodes`: one row per `(session_id, node_id)`.
-- `lcm_edges`: ordered parent-to-child summary edges.
-- `lcm_nodes_fts`: FTS5 acceleration for summary search.
-- `lcm_scan_state`: per-session `last_scanned_seq` high-water mark. Ordinary tail events advance it, while an unfinished compaction keeps it immediately before that transaction.
-- `lcm_index_state`: legacy alpha.7 cursor retained only as the schema-v2 migration source.
-- `lcm_meta`: schema version.
-
-A node stores summary blocks, normalized text, child ids, exact source sequence ids, token accounting, provider/model metadata, and status. During live indexing and replay, child edges are re-derived from `shadowedSeqs` that resolve to genuine compact-checkpoint source events; child claims embedded in summary text are never authoritative. The index does not store raw source event JSON.
-
-## Fork isolation
-
-A fork can inherit an old summary marker. Therefore `node_id` alone is not globally unique. All rows and edges are scoped by `session_id`; a parent and child session can carry the same marker id without overwriting each other.
-
-## Exact expansion
-
-`lcm_expand` resolves every cited sequence number against the calling agent's live session. It serializes the exact event and returns a bounded character page. The cursor contains:
-
-```json
-{
-  "sourceOffset": 3,
-  "eventCharOffset": 12000
-}
-```
-
-The second field is required because a single tool result can exceed the whole page budget. Head/tail truncation would violate recoverability; the two-dimensional cursor lets callers continue through the middle.
-
-Event lookup is by the event's `seq` field, not its array position, so sparse or reordered in-memory event arrays remain recoverable.
-
-## Failure containment
-
-Indexing happens only after a complete successful compaction lifecycle. Replay resumes after the last safely scanned event, including ordinary tail events. An unfinished transaction holds the cursor before its `compaction/start`, and an indexing failure holds it before the failed `compaction/end`, so later calls can reconstruct and retry the lifecycle from the canonical log. SQLite/indexing failure is logged and contained and does not roll back the canonical DSH transaction. `lcm_reindex` can rebuild derived state; `lcm_doctor` is read-only unless called with `repair: true`.
-
-## Security and isolation
-
-All model-facing tools obtain the session from `exec.agent.session`. They reject calls without a live agent and never accept an arbitrary session id from tool arguments. This prevents a tool call from selecting another session's index namespace.
-
-## Deliberately deferred work
-
-The alpha does not yet implement:
-
-- multi-level rollup scheduling independent of rolling pressure compaction;
-- focus briefs or task-specific context assembly;
-- embedding retrieval;
-- cross-session knowledge promotion;
-- retention policies for stale SQLite namespaces;
-- 与 Lossless Claw 的运行和诊断界面完全对齐 / full parity with Lossless Claw's operational and diagnostic surface.
-
-These should be added behind explicit contracts rather than by bypassing the DSH session transaction.
+`lib/client.js` 注册 DSH 插件设置槽。请求经过 DSH 已认证的 connection 服务，路径为 `/api/dsh-superlcm/*`。没有独立监听端口、外部后台跳转或多宿主接入设置。

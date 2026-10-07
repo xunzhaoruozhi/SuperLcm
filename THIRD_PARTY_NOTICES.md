@@ -8,5 +8,7 @@ Its architecture is inspired by:
 - **Lossless Claw** by Martian Engineering: an open-source LCM implementation for OpenClaw. License: MIT.
 - **DeepSeek Harness** by DeepSeek AI: append-only session logs, surface replacement, the `ctx.compaction` capability seam, and model-facing tools. Repository license: MIT; individual published package metadata may carry its own license notice.
 
-No source file from either project is vendored in this repository. Keep their
-upstream notices when copying or adapting upstream code in future revisions.
+Version 0.5.20 ports the DSH compaction engine and shared summary policy from
+SuperLcm-Claude-Recall (MIT), maintained by the same repository owner. Its
+standalone archive and UI use published DSH APIs. No source from Lossless Claw
+or the DSH runtime is vendored. Preserve upstream notices when adapting code.

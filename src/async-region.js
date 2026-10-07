@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import {
   CompactionId,
@@ -8,13 +8,21 @@ import {
   toolPairingBalancedBefore,
 } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
-import { extractChildNodeIds } from './marker.js'
+import { markerFromSummary, appendRecallEnvelope } from './marker.js'
+import { nodeLevel } from './core.js'
+import { checkpointChild } from './summary-task.js'
+import { CHECKPOINT_PREAMBLE } from './checkpoint-frame.js'
 
 const SUMMARY_OPEN_TAG = '<compacted-summary>'
 const SUMMARY_CLOSE_TAG = '</compacted-summary>'
-const CHECKPOINT_PREAMBLE = 'This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.'
 
 export class AsyncSurfaceChangedError extends Error {}
+const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+export const sourceFingerprints = (session,seqs) => seqs.map(seq=>[seq,hash(session.eventAt(seq))])
+function noProgress(engine,sessionId,key,message) {
+  engine.superLcmStore.blockSummary(sessionId,key)
+  const error=Error(message);error.code='SUPERLCM_SUMMARY_NO_PROGRESS';return error
+}
 
 function systemHead(session, headSeq) {
   if (headSeq === undefined) return undefined
@@ -43,7 +51,14 @@ function frameSummary(summary) {
   ]
 }
 
-function locateStableSpan(engine, session, prepared) {
+export function minimumCheckpointTokens(engine, children = []) {
+  return engine.ctx.tokenMeter.estimateMessage(createUserMessage({
+    content: frameSummary(appendRecallEnvelope([], { id: randomUUID(), children })),
+    source: compactCheckpointSource(CompactionId(randomUUID())),
+  }))
+}
+
+export function locateStableSpan(engine, session, prepared) {
   const surfaceNodes = session.surface.nodes
   const startIdx = surfaceNodes.indexOf(prepared.start)
   const endIdx = surfaceNodes.indexOf(prepared.end)
@@ -57,6 +72,7 @@ function locateStableSpan(engine, session, prepared) {
   if (!toolPairingBalancedBefore(session, prepared.start) || !toolPairingBalancedAfter(session, prepared.end)) {
     throw new AsyncSurfaceChangedError('prepared compaction span is no longer tool-pair balanced')
   }
+  if (!isDeepStrictEqual(prepared.sourceFingerprints, sourceFingerprints(session,shadowedSeqs))) throw new AsyncSurfaceChangedError('prepared source content changed while summarization ran')
   const selectedNodes = engine.ctx.tokenMeter.measure(session).nodes.slice(startIdx, endIdx + 1)
   if (!isDeepStrictEqual(selectedNodes, prepared.selectedNodes)) {
     throw new AsyncSurfaceChangedError('prepared compaction span was rewritten while summarization ran')
@@ -111,11 +127,7 @@ export function prepareAsyncRegion(engine, agent, selection) {
   const measurement = engine.ctx.tokenMeter.measure(session)
   const selectedNodes = structuredClone(measurement.nodes.slice(startIdx, endIdx + 1))
   const shadowedSeqs = [...surfaceNodes.slice(startIdx, endIdx + 1)]
-  const trustedChildNodeIds = [...new Set(shadowedSeqs.flatMap((seq) => {
-    const event = session.eventAt(seq)
-    if (event?.type !== 'user/message' || !isCompactCheckpointSource(event.data?.source)) return []
-    return extractChildNodeIds(event.data?.content)
-  }))]
+  const trustedChildNodeIds = [...new Set(shadowedSeqs.map(seq => checkpointChild(engine,session,session.eventAt(seq))).filter(Boolean))]
   if (selectedNodes.length !== shadowedSeqs.length || selectedNodes.some((node, index) => node.seq !== shadowedSeqs[index])) {
     throw new AsyncSurfaceChangedError('token-meter surface does not match the selected compaction span')
   }
@@ -125,6 +137,7 @@ export function prepareAsyncRegion(engine, agent, selection) {
     endIdx,
     selectedNodes,
     shadowedSeqs,
+    sourceFingerprints: sourceFingerprints(session,shadowedSeqs),
     trustedChildNodeIds,
     shadowedTokenCount: selectedNodes.reduce((total, node) => total + (node.heuristicTokens ?? node.tokens ?? 0), 0),
     shadowedRouteTokenCount: selectedNodes.reduce((total, node) => total + (node.tokens ?? 0), 0),
@@ -134,9 +147,16 @@ export function prepareAsyncRegion(engine, agent, selection) {
 
 export async function summarizeAsyncRegion(engine, agent, prepared, signal) {
   signal?.throwIfAborted()
+  const attemptKey=hash([prepared.input,prepared.summaryTargetTokens,prepared.summaryDepth,
+    prepared.trustedChildNodeIds,engine.summaryRouteFingerprint(),engine.rollingConfig])
+  if (engine.superLcmStore.summaryBlocked(agent.session.id,attemptKey)) {
+    const error=Error('相同输入的摘要没有节省空间，请调整摘要模型或粒度后重试');error.code='SUPERLCM_SUMMARY_NO_PROGRESS';throw error
+  }
   const compactionId = CompactionId(randomUUID())
   const summaryResult = await engine.summarize(prepared.input, agent, signal, {
     trustedChildNodeIds: prepared.trustedChildNodeIds,
+    summaryTask: { level:prepared.summaryDepth ?? Math.max(0,...prepared.trustedChildNodeIds.map(id=>nodeLevel(engine.superLcmStore,agent.session.id,id))),
+      first:prepared.start,last:prepared.end, ...(prepared.summaryTargetTokens ? {targetTokens:prepared.summaryTargetTokens} : {}) },
   })
   signal?.throwIfAborted()
   if (summaryResult === null || typeof summaryResult !== 'object' || !Array.isArray(summaryResult.summary)) {
@@ -148,9 +168,9 @@ export async function summarizeAsyncRegion(engine, agent, prepared, signal) {
   })
   const framedSummaryTokenCount = engine.ctx.tokenMeter.estimateMessage(checkpointMessage)
   if (framedSummaryTokenCount >= prepared.shadowedRouteTokenCount) {
-    throw new Error('summary is not smaller than the shadowed content (' + framedSummaryTokenCount + ' estimated framed tokens >= ' + prepared.shadowedRouteTokenCount + ')')
+    throw noProgress(engine,agent.session.id,attemptKey,'summary is not smaller than the shadowed content (' + framedSummaryTokenCount + ' estimated framed tokens >= ' + prepared.shadowedRouteTokenCount + ')')
   }
-  return { ...prepared, ...summaryResult, checkpointMessage, compactionId }
+  return { ...prepared, ...summaryResult, checkpointMessage, compactionId, attemptKey }
 }
 
 export function commitAsyncRegion(engine, agent, summarized) {
@@ -174,6 +194,9 @@ export function commitAsyncRegion(engine, agent, summarized) {
       shadowedTokenCount: summarized.shadowedTokenCount,
       provider: summarized.provider,
       model: summarized.model,
+      ...(summarized.preparedBatchCount === undefined ? {} : { preparedBatchCount: summarized.preparedBatchCount }),
+      ...(summarized.preparedTree === undefined ? {} : { preparedTree: summarized.preparedTree,
+        summaryTreeKind: summarized.summaryTreeKind, summaryTreeDepth: summarized.summaryTreeDepth }),
       ...(summarized.maxTokens === undefined ? {} : { maxTokens: summarized.maxTokens }),
       ...(summarized.usage === undefined ? {} : { usage: summarized.usage }),
     })

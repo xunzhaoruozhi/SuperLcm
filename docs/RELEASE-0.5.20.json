@@ -1,0 +1,36 @@
+{
+  "release": "0.5.20",
+  "date": "2026-10-07",
+  "sourceRepository": "yu381792/SuperLcm-Claude-Recall",
+  "sourceCommit": "a1b77e7e7a5f63bf91fc6fcd3dc01c4ebb3064f7",
+  "hostVersion": "0.2.1-alpha.1",
+  "nodeVersion": "v22.22.3",
+  "realHost": {
+    "mounted": true,
+    "authenticatedRPC": true,
+    "settingsReadSave": true,
+    "staleRevisionRejected": true,
+    "nativeCompactor": true,
+    "existingModelCatalog": true,
+    "historyImport": true,
+    "packagedArchiveMounted": true,
+    "unauthenticatedRejected": true,
+    "invalidEnvelopeRejected": true
+  },
+  "regressionTests": 33,
+  "review": {
+    "independent": true,
+    "findingsClosed": [
+      "real-tool-boundaries",
+      "source-input-budget",
+      "capture-schedule-race",
+      "cross-process-settings-lock"
+    ]
+  },
+  "browser": {
+    "actualChromeScreenshot": false,
+    "reason": "Built-in Chrome connection reports nodeRepl.fetch request failed"
+  },
+  "paidModelCalls": false,
+  "productionProfileChanged": false
+}

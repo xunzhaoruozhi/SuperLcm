@@ -1,0 +1,68 @@
+import {randomUUID} from 'node:crypto'
+import {defineTool} from '@deepseek-ai/dsh-tools'
+import {ArchiveDatabase,sessionId} from './archive-db.js'
+import {readRawDshSession} from './raw-session.js'
+import {archiveWork} from './archive-planner.js'
+import {SUMMARY_SYSTEM,buildSummaryPrompt,checkedSummary} from './summary-policy.js'
+import {readSettings} from './settings.js'
+import {summarySessionId} from './summary-session.js'
+import {reindexSession,nodeLevel} from './core.js'
+export class ArchiveService {
+  constructor(ctx,native,file) {
+    this.ctx=ctx;this.native=native;this.file=file;this.db=new ArchiveDatabase(native.path);this.dirty=new Set();this.jobs=new Set();this.stopped=false;this.controllers=new Set()
+    this.onEvent=(session,event)=>{this.dirty.add(session.id);if(event?.type==='turn/end')this.jobs.add(session.id);void this.drain()}
+    ctx.on('session/event',this.onEvent)
+    ctx.on('ready',()=>{void this.import()})
+    this.registerTools()
+    ctx.effect(()=>()=>this.close())
+  }
+  async capture(id) {
+    const live=this.ctx.sessions.get(id),cursor=this.db.cursor(id),incremental=!!live&&cursor>0
+    const raw=incremental?{header:live.header,events:Array.from({length:Math.max(0,live.seq-cursor)},(_,i)=>live.eventAt(cursor+i)),close(){}}:await readRawDshSession(this.ctx,id)
+    try{
+      for(let i=0;i<raw.events.length;i+=500){if(this.stopped)return;this.db.capture(raw.header,raw.events.slice(i,i+500));await new Promise(r=>setImmediate(r))}
+      if(!raw.events.length)this.db.capture(raw.header,[])
+      if(!incremental||raw.events.some(e=>e.type==='compaction/end'))reindexSession(this.native,{id,header:raw.header,snapshotEvents:()=>incremental?live.snapshotEvents():raw.events})
+    }finally{await raw.close()}
+  }
+  async import(){if(this.importing)return {scheduled:true};this.importing=true
+    try{for(const {header} of await this.ctx.sessionQuery.listSessions())this.dirty.add(header.id);void this.drain()}catch{this.lastError='历史归档读取失败，请检查 DSH 日志'}finally{this.importing=false}
+    return {scheduled:true}
+  }
+  schedule(id){sessionId(id);if(!readSettings(this.file).settings.summaryEnabled)throw Error('请先开启后台摘要并选择模型');this.dirty.add(id);this.jobs.add(id);void this.drain();return {scheduled:true}}
+  changed(){for(const controller of this.controllers)controller.abort(Error('摘要设置已变化'))}
+  async drain(){if(this.running||this.stopped)return this.running
+    this.running=(async()=>{while(this.dirty.size&&!this.stopped){const id=this.dirty.values().next().value;this.dirty.delete(id)
+      try{await this.capture(id);if(this.dirty.has(id))continue;if(this.jobs.delete(id))await this.summarize(id)}catch{this.lastError='后台归档或摘要失败，原文保留，请检查 DSH 日志';this.ctx.logger?.warn?.(this.lastError)}
+    }})().finally(()=>{this.running=null;if(this.dirty.size&&!this.stopped)void this.drain()});return this.running
+  }
+  async summarize(id){const doc=readSettings(this.file);if(!doc.settings.summaryEnabled)return
+    const owner=this.db.lease(id,doc.revision);if(!owner)return
+    const controller=new AbortController();this.controllers.add(controller);let failed=false
+    const heartbeat=setInterval(()=>{try{if(!this.db.renew(id,owner))controller.abort(Error('摘要任务已失去归属'));if(readSettings(this.file).revision!==doc.revision)controller.abort(Error('摘要设置已变化'))}catch{controller.abort(Error('摘要设置不可用'))}},10000);heartbeat.unref()
+    try{for(let work;(work=archiveWork(this.db,id,doc.settings));){controller.signal.throwIfAborted();if(readSettings(this.file).revision!==doc.revision)break
+      const timeout=AbortSignal.timeout(180000),signal=AbortSignal.any([controller.signal,timeout]),route={provider:doc.settings.summaryProvider,model:doc.settings.summaryModel}
+      let text='',reason=null
+      for await(const chunk of this.ctx.llm.stream({...route,sessionId:summarySessionId(id,route),purpose:'compaction',maxTokens:2048,signal,messages:[{role:'system',content:[{type:'text',text:SUMMARY_SYSTEM}]},{role:'user',content:[{type:'text',text:buildSummaryPrompt(work.content,{...work,kind:work.level?'condensed':'leaf'})}]}]})){
+        signal.throwIfAborted();if(chunk.type==='text-delta')text+=chunk.text
+        if(chunk.type==='finish'){reason=chunk.reason;if(['error','aborted'].includes(reason?.kind))throw Error('摘要模型失败')}
+      }
+      signal.throwIfAborted();if(!reason)throw Error('摘要模型未正常结束');text=checkedSummary(text,{finishReason:reason})
+      this.db.saveNode(id,work,text,owner,doc.revision,()=>readSettings(this.file).revision)
+      await new Promise(r=>setImmediate(r))
+    }}catch(error){failed=true;throw error}finally{clearInterval(heartbeat);this.controllers.delete(controller);this.db.release(id,owner,failed)}
+  }
+  outline(id){
+    const value=this.db.outline(id),native=this.native.listNodes(id,{limit:5000,status:'committed'})
+    const nodes=native.map(n=>({id:'native:'+n.nodeId,level:nodeLevel(this.native,id,n.nodeId),first:n.sourceStart??0,last:n.sourceEnd??0,summary:n.summaryText,children:n.childIds.map(x=>'native:'+x),sources:n.sourceSeqs,native:true}))
+    const covered=new Set([...value.nodes,...nodes].flatMap(n=>n.sources))
+    return {...value,nodes:[...value.nodes,...nodes],uncovered:this.db.sourceRows(id).filter(e=>!covered.has(e.seq)).length}
+  }
+  registerTools(){const json={schema:{type:'json'},render:(_args,value)=>[{type:'text',text:JSON.stringify(value)}]},resolve=(args,exec)=>args.session||exec?.agent?.session?.id
+    const specs=[['lcm_outline','查看 DSH 会话的后台摘要目录；摘要用于导航，精确结论请查原文。',{session:{type:'string'}},(a,e)=>this.outline(resolve(a,e))],
+      ['lcm_read','按事件编号读取 DSH 完整原文。',{session:{type:'string'},offset:{type:'integer'},limit:{type:'integer'}},(a,e)=>this.db.events(resolve(a,e),a.offset,a.limit)],
+      ['lcm_find','搜索已归档的 DSH 会话原文。',{session:{type:'string'},query:{type:'string'},offset:{type:'integer'},limit:{type:'integer'}},a=>this.db.find(a)]]
+    for(const [name,description,parameters,run] of specs)this.ctx.tools.register(defineTool({name,description,parameters,output:json,execute:async(args,exec)=>{await this.drain();return run(args,exec)},presentCall:args=>({card:'generic',title:name,kind:'read',rawInput:args})}))
+  }
+  async close(){if(this.closing)return this.closing;this.stopped=true;this.changed();this.closing=(async()=>{await this.running;this.db.close()})();return this.closing}
+}

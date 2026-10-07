@@ -2,8 +2,9 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { CompressionReporter } from './compression-status.js'
 
-const SCHEMA_VERSION = 3
+const SCHEMA_VERSION = 4
 
 function parseJson(value, fallback) {
   if (typeof value !== 'string') return fallback
@@ -36,6 +37,7 @@ function rowToNode(row) {
     provider: row.provider ?? null,
     model: row.model ?? null,
     status: row.status,
+    kind: row.node_kind ?? null,
   }
 }
 
@@ -51,14 +53,11 @@ function ftsQuery(text) {
 }
 
 export function resolveDatabasePath(env = process.env) {
-  const explicit = env.DSH_SUPERLCM_DB?.trim() || env.DSH_LOSSLESS_DB?.trim()
-  if (explicit) return resolve(explicit)
-
-  const home = env.DSH_HOME?.trim() || join(homedir(), '.dsh')
-  const current = resolve(home, 'SuperLcm', 'lcm.sqlite')
-  const legacy = resolve(home, 'lossless-context', 'lcm.sqlite')
-  if (!existsSync(current) && existsSync(legacy)) return legacy
-  return current
+  const explicit=env.DSH_SUPERLCM_DB?.trim()||env.DSH_LOSSLESS_DB?.trim()
+  if(explicit)return resolve(explicit)
+  const root=env.DSH_HOME?.trim()||join(homedir(),'.dsh')
+  const current=resolve(root,'SuperLcm','lcm.sqlite'),legacy=resolve(root,'lossless-context','lcm.sqlite')
+  return !existsSync(current)&&existsSync(legacy)?legacy:current
 }
 
 export class SuperLcmStore {
@@ -69,7 +68,7 @@ export class SuperLcmStore {
     this.path = path === ':memory:' ? path : resolve(path)
     if (this.path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true })
     this.#db = new DatabaseSync(this.path)
-    this.#db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
+    this.#db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;')
     this.#migrate()
   }
 
@@ -79,6 +78,14 @@ export class SuperLcmStore {
 
   #migrate() {
     this.#db.exec(`
+      CREATE TABLE IF NOT EXISTS lcm_summary_blocks (
+        session_id TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id,fingerprint)
+      );
+      CREATE TABLE IF NOT EXISTS lcm_compaction_drafts (
+        session_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, data_json TEXT NOT NULL,
+        status TEXT NOT NULL, updated_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS lcm_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -132,6 +139,9 @@ export class SuperLcmStore {
         tokenize = 'unicode61 remove_diacritics 2'
       );
     `)
+    if (!this.#db.prepare('PRAGMA table_info(lcm_nodes)').all().some(row => row.name === 'node_kind')) {
+      this.#db.exec('ALTER TABLE lcm_nodes ADD COLUMN node_kind TEXT')
+    }
     this.#db.exec(`
       INSERT OR IGNORE INTO lcm_scan_state(session_id, last_scanned_seq)
       SELECT session_id, last_committed_end_seq FROM lcm_index_state;
@@ -140,6 +150,13 @@ export class SuperLcmStore {
       INSERT INTO lcm_meta(key, value) VALUES ('schema_version', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(String(SCHEMA_VERSION))
+  }
+
+  compressionReporter(options) { return new CompressionReporter(this.#db, options) }
+
+  archivedSessionIds() {
+    if (!this.#db.prepare("SELECT 1 FROM sqlite_master WHERE name='dsh_mirrors'").get()) return []
+    return this.#db.prepare('SELECT header FROM dsh_mirrors').all().map(row => JSON.parse(row.header).id)
   }
 
   upsertNode(node) {
@@ -157,8 +174,8 @@ export class SuperLcmStore {
           session_id, node_id, compaction_id, summary_seq, created_at,
           summary_json, summary_text, summary_normalized,
           child_ids_json, source_seqs_json, source_start, source_end,
-          shadowed_token_count, provider, model, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          shadowed_token_count, provider, model, status, node_kind
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, node_id) DO UPDATE SET
           compaction_id = excluded.compaction_id,
           summary_seq = excluded.summary_seq,
@@ -173,7 +190,8 @@ export class SuperLcmStore {
           shadowed_token_count = excluded.shadowed_token_count,
           provider = excluded.provider,
           model = excluded.model,
-          status = excluded.status
+          status = excluded.status,
+          node_kind = excluded.node_kind
       `).run(
         node.sessionId,
         node.nodeId,
@@ -191,6 +209,7 @@ export class SuperLcmStore {
         node.provider ?? null,
         node.model ?? null,
         node.status ?? 'ready',
+        node.kind ?? null,
       )
       this.#db.prepare('DELETE FROM lcm_edges WHERE session_id = ? AND parent_id = ?')
         .run(node.sessionId, node.nodeId)
@@ -233,6 +252,11 @@ export class SuperLcmStore {
     return rowToNode(this.#db.prepare(`
       SELECT * FROM lcm_nodes WHERE session_id = ? AND node_id = ?
     `).get(sessionId, nodeId))
+  }
+
+  getCompactionNode(sessionId, compactionId) {
+    this.#assertOpen()
+    return rowToNode(this.#db.prepare('SELECT * FROM lcm_nodes WHERE session_id = ? AND compaction_id = ?').get(sessionId,compactionId))
   }
 
   listNodes(sessionId, { limit = 200, status } = {}) {
@@ -348,6 +372,31 @@ export class SuperLcmStore {
       ORDER BY e.parent_id, e.position
     `).all(sessionId)
     return { nodeCount, edgeCount, missingChildren }
+  }
+
+  blockSummary(sessionId,fingerprint) {
+    this.#assertOpen()
+    this.#db.prepare('INSERT OR IGNORE INTO lcm_summary_blocks VALUES (?,?,?)').run(sessionId,fingerprint,Date.now())
+  }
+  summaryBlocked(sessionId,fingerprint) {
+    this.#assertOpen()
+    return !!this.#db.prepare('SELECT 1 FROM lcm_summary_blocks WHERE session_id=? AND fingerprint=?').get(sessionId,fingerprint)
+  }
+
+  saveDraft(sessionId, fingerprint, data) {
+    this.#assertOpen()
+    this.#db.prepare(`INSERT INTO lcm_compaction_drafts VALUES (?,?,?,'ready',?)
+      ON CONFLICT(session_id) DO UPDATE SET fingerprint=excluded.fingerprint,
+      data_json=excluded.data_json,status='ready',updated_at=excluded.updated_at`).run(sessionId,fingerprint,data,Date.now())
+  }
+  loadDraft(sessionId) {
+    this.#assertOpen()
+    const row=this.#db.prepare("SELECT fingerprint,data_json FROM lcm_compaction_drafts WHERE session_id=? AND status='ready'").get(sessionId)
+    return row ? {fingerprint:row.fingerprint,data:row.data_json} : null
+  }
+  finishDraft(sessionId,status) {
+    this.#assertOpen()
+    this.#db.prepare('UPDATE lcm_compaction_drafts SET status=?,data_json=?,updated_at=? WHERE session_id=?').run(status,'{}',Date.now(),sessionId)
   }
 
   close() {

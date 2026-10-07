@@ -16,6 +16,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm ci --ignore-scripts
       - run: npm run validate
       - id: pack
         shell: bash
@@ -30,13 +31,12 @@ jobs:
         shell: bash
         run: |
           cat > release-notes.md <<'NOTES'
-          ## SuperLcm public alpha / 公开测试版
+          ## dsh-superlcm standalone
 
-          仓库根 README 是默认中文、可切换英文的详细项目介绍。本版本重点说明 LCM 原理、全面异步压缩、较小活动上下文、稳定缓存前缀、SQLite 无损召回与成本边界，并加入 Windows、Linux、macOS CI。
+          DSH 独立版：会话归档、后台分层摘要与可选比例压缩，全部在 DSH 插件页管理。
+          默认由 DSH 原生压缩保护上下文。后台摘要与接管模型分别选择，保留旧版数据库和召回工具。
 
-          The repository README is the Chinese-default bilingual project home. It documents the LCM foundation, fully asynchronous compaction, bounded active context, prefix-stable caching, SQLite-backed exact recall, provider-dependent cost savings, and CI on Windows, Linux, and macOS.
-
-          > Install into a dedicated DSH profile and follow the validation guide before enabling it in a primary workspace.
+          A DSH-only plugin with native UI, complete original archiving, hierarchical summaries and optional ratio-based compaction. Native DSH compaction is active by default. See README for installation and validation scope.
           NOTES
           gh release create "$GITHUB_REF_NAME" "$ARCHIVE" SHA256SUMS.txt \
             --title "SuperLcm $GITHUB_REF_NAME" \
