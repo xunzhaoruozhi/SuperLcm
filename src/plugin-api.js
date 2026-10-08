@@ -11,7 +11,7 @@ export function pluginApi(ctx,archive,owner,file){let saving=false
   const read=async()=>{const doc=readSettings(file);return {version,revision:doc.revision,settings:doc.settings,catalog:await modelCatalog(ctx),runtime:{takeover:owner.mode==='superlcm',mode:owner.mode==='superlcm'?'superlcm':'native',archive:true,lastError:archive.lastError}}}
   const handlers={read,save:async payload=>{if(saving)throw Error('设置正在保存');saving=true
       try{saveSettings(payload,await modelCatalog(ctx),file);archive.changed();await owner.reload();return await read()}finally{saving=false}},
-    sessions:payload=>archive.db.sessions(payload||{}),outline:payload=>archive.outline(payload?.session),
+    sessions:payload=>archive.sessions(payload||{}),outline:payload=>archive.outline(payload?.session),
     'read-events':payload=>archive.db.events(payload?.session,payload?.offset,payload?.limit),find:payload=>archive.db.find(payload),import:()=>archive.import(),summarize:payload=>archive.schedule(payload?.session)}
   ctx.inject(['connection'],child=>{
     for(const [method,handle] of Object.entries(handlers))child.connection.fetch.register({path:'/api/dsh-superlcm/'+method,methods:['POST'],requestBody:'buffered',fetch:async request=>{

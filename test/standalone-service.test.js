@@ -20,7 +20,7 @@ async function fixture(run,enabled=true,respond=async()=> 'Source facts with exa
  ctx.reflect.provide('sessionQuery',{observeSession:async id=>{const s=ctx.sessions.get(id);return {source:'live',header:s.header,events:s.snapshotEvents(),[Symbol.dispose](){}}},listSessions:async()=>[]})
  const archive=new ArchiveService(ctx,native,file),session=ctx.sessions.create('standalone-service',{meta:{cwd:'/project'}})
  const append=text=>session.append('user/message',createUserMessage({content:[{type:'text',text}]}),{surfaceOp:'append'})
- try{await run({ctx,session,archive,append,file,doc,calls,tools})}finally{await ctx.fiber.dispose();await archive.close();native.close()}
+ try{await run({ctx,session,archive,append,file,doc,calls,tools,native})}finally{await ctx.fiber.dispose();await archive.close();native.close()}
 }
 test('archive-only summaries use the selected host model and never replace the conversation',async()=>{
  await fixture(async({session,archive,append,calls,tools})=>{
@@ -45,5 +45,17 @@ test('history archiving and native mode make no auxiliary model calls when summa
  await fixture(async({session,archive,append,calls})=>{
   append('Long original source '.repeat(2000));await archive.drain();await archive.import();await archive.drain()
   assert.equal(calls.length,0);assert.ok(archive.db.events(session.id).items.length);assert.throws(()=>archive.schedule(session.id),/开启/)
+ },false)
+})
+
+test('native committed checkpoints appear at the real summary depth without assembly wrappers',async()=>{
+ await fixture(async({session,archive,append,native})=>{
+  append('First exact source');append('Second exact source');await archive.drain()
+  const seqs=session.snapshotEvents().filter(e=>e.type==='user/message').map(e=>e.seq)
+  const a=[{type:'text',text:'Summary A'}],b=[{type:'text',text:'Summary B'}]
+  native.upsertNode({sessionId:session.id,nodeId:'a',summary:a,summaryText:'Summary A',sourceSeqs:[seqs[0]],status:'ready',kind:'leaf'})
+  native.upsertNode({sessionId:session.id,nodeId:'b',summary:b,summaryText:'Summary B',sourceSeqs:[seqs[1]],status:'ready',kind:'leaf'})
+  native.upsertNode({sessionId:session.id,nodeId:'wrapper',summary:[...a,...b],summaryText:'Summary A Summary B',childIds:['a','b'],sourceSeqs:seqs,status:'ready',kind:'assembled'})
+  const outline=archive.outline(session.id);assert.equal(outline.nodes.length,2);assert.ok(outline.nodes.every(n=>n.level===0));assert.equal(outline.uncovered,0);assert.equal(archive.sessions().items[0].summaryCount,2)
  },false)
 })

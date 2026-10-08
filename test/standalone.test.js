@@ -76,3 +76,7 @@ test('a database written by the old 0.3 plugin preserves its compaction nodes on
  const archive=new ArchiveDatabase(path);t.after(()=>archive.close());archive.capture({id:'one'},[event(0)])
  assert.equal(current.getNode('one','old').summaryText,'Old exact decision')
 })
+test('re-importing old archives keeps the actual event time instead of making them recent',t=>{
+ const {db}=fixture(t);db.capture({id:'old',createdAt:1},[{seq:0,type:'user/message',time:10,data:{content:'old'}}]);db.capture({id:'new',createdAt:20},[{seq:0,type:'user/message',time:30,data:{content:'new'}}]);db.capture({id:'old',createdAt:1},[])
+ assert.equal(db.sessions().items[0].id,'new');assert.equal(db.sessions().items[1].updatedAt,10)
+})

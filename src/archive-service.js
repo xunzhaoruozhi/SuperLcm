@@ -7,6 +7,7 @@ import {SUMMARY_SYSTEM,buildSummaryPrompt,checkedSummary} from './summary-policy
 import {readSettings} from './settings.js'
 import {summarySessionId} from './summary-session.js'
 import {reindexSession,nodeLevel} from './core.js'
+import {semanticKind,semanticFrontier} from './tree-semantics.js'
 export class ArchiveService {
   constructor(ctx,native,file) {
     this.ctx=ctx;this.native=native;this.file=file;this.db=new ArchiveDatabase(native.path);this.dirty=new Set();this.jobs=new Set();this.stopped=false;this.controllers=new Set()
@@ -17,12 +18,15 @@ export class ArchiveService {
     ctx.effect(()=>()=>this.close())
   }
   async capture(id) {
-    const live=this.ctx.sessions.get(id),cursor=this.db.cursor(id),incremental=!!live&&cursor>0
-    const raw=incremental?{header:live.header,events:Array.from({length:Math.max(0,live.seq-cursor)},(_,i)=>live.eventAt(cursor+i)),close(){}}:await readRawDshSession(this.ctx,id)
+    const live=this.ctx.sessions.get(id),cursor=this.db.cursor(id),incremental=cursor>0
+    const raw=live&&incremental?{header:live.header,events:Array.from({length:Math.max(0,live.seq-cursor)},(_,i)=>live.eventAt(cursor+i)),close(){}}:await readRawDshSession(this.ctx,id,cursor)
     try{
       for(let i=0;i<raw.events.length;i+=500){if(this.stopped)return;this.db.capture(raw.header,raw.events.slice(i,i+500));await new Promise(r=>setImmediate(r))}
       if(!raw.events.length)this.db.capture(raw.header,[])
-      if(!incremental||raw.events.some(e=>e.type==='compaction/end'))reindexSession(this.native,{id,header:raw.header,snapshotEvents:()=>incremental?live.snapshotEvents():raw.events})
+      if(!incremental||raw.events.some(e=>e.type==='compaction/end')){
+        const full=incremental&&!live?await readRawDshSession(this.ctx,id):null
+        try{reindexSession(this.native,{id,header:raw.header,snapshotEvents:()=>full?.events||(incremental?live.snapshotEvents():raw.events)})}finally{await full?.close()}
+      }
     }finally{await raw.close()}
   }
   async import(){if(this.importing)return {scheduled:true};this.importing=true
@@ -52,9 +56,24 @@ export class ArchiveService {
       await new Promise(r=>setImmediate(r))
     }}catch(error){failed=true;throw error}finally{clearInterval(heartbeat);this.controllers.delete(controller);this.db.release(id,owner,failed)}
   }
+  sessions(input){
+    const value=this.db.sessions(input)
+    return {...value,items:value.items.map(item=>({...item,summaryCount:item.summaryCount+this.native.listNodes(item.id,{limit:5000,status:'ready'}).filter(n=>semanticKind(this.native,item.id,n.nodeId)!=='assembled').length}))}
+  }
   outline(id){
-    const value=this.db.outline(id),native=this.native.listNodes(id,{limit:5000,status:'committed'})
-    const nodes=native.map(n=>({id:'native:'+n.nodeId,level:nodeLevel(this.native,id,n.nodeId),first:n.sourceStart??0,last:n.sourceEnd??0,summary:n.summaryText,children:n.childIds.map(x=>'native:'+x),sources:n.sourceSeqs,native:true}))
+    const value=this.db.outline(id),native=this.native.listNodes(id,{limit:5000,status:'ready'})
+    const original=new Set(this.db.sourceRows(id).map(e=>e.seq)),memo=new Map()
+    const sources=(key,seen=new Set())=>{
+      if(seen.has(key))throw Error('摘要树存在循环')
+      if(memo.has(key))return memo.get(key)
+      const node=this.native.getNode(id,key);if(!node)throw Error('摘要树缺少子节点')
+      const next=new Set([...seen,key]),seqs=[...new Set([...node.sourceSeqs,...node.childIds.flatMap(child=>sources(child,next))])].filter(seq=>original.has(seq)).sort((a,b)=>a-b)
+      memo.set(key,seqs);return seqs
+    }
+    const nodes=native.filter(n=>semanticKind(this.native,id,n.nodeId)!=='assembled').map(n=>{
+      const seqs=sources(n.nodeId)
+      return {id:'native:'+n.nodeId,level:nodeLevel(this.native,id,n.nodeId)-1,first:seqs[0]??n.sourceStart??0,last:seqs.at(-1)??n.sourceEnd??0,summary:n.summaryText,children:n.childIds.flatMap(x=>semanticFrontier(this.native,id,x)).map(x=>'native:'+x),sources:seqs,native:true}
+    })
     const covered=new Set([...value.nodes,...nodes].flatMap(n=>n.sources))
     return {...value,nodes:[...value.nodes,...nodes],uncovered:this.db.sourceRows(id).filter(e=>!covered.has(e.seq)).length}
   }

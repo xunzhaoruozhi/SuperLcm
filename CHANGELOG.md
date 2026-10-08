@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.21 — 2026-10-08
+
+- Deploy native DSH settings UI in place of the external console bridge.
+- Import DSH originals and existing summary trees from the shared archive without model calls; reject conflicting node content or references instead of overwriting them.
+- Correct native ready-node visibility, semantic levels and session summary counts.
+- Open summary settings first; fetch conversation history only when requested.
+- Read persisted cold tails incrementally and preserve real session activity times.
+
 ## 0.5.20 — 2026-10-07
 
 - Rebuild as a DSH-only plugin with native conversations, summary and optional compaction settings.

@@ -160,6 +160,7 @@ function createClient({ settings = {}, runtime = {} } = {}) {
     assert.ok(input && !input.props.disabled); input.props.onChange({ target: { checked } }); await settle();
   }
   async function selectSession(title) {
+    await click("对话");
     const node = find((item) => item.type === 'button' && text(item).startsWith(title), title);
     node.props.onClick(); await settle();
   }
@@ -193,6 +194,9 @@ test('native plugin registers the actual client with the authenticated host conn
   assert.equal(app.registration.inject().connection, app.connection);
   assert.equal(app.calls[0].method, 'read');
   assert.match(app.text(), /对话摘要设置压缩/);
+  assert.match(app.text(), /启用后台分层摘要/);
+  assert.deepEqual(app.calls.map((call) => call.method), ['read']);
+  await app.click('对话');
   assert.match(app.text(), /会话甲/);
   assert.deepEqual(app.calls.map((call) => call.method), ['read', 'sessions']);
 });

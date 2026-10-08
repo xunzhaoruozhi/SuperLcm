@@ -1,6 +1,6 @@
 {
   "name": "SuperLcm",
-  "version": "0.5.20",
+  "version": "0.5.21",
   "description": "DSH 独立插件：原文归档、后台分层摘要、精确召回与可选比例压缩。全部在 DSH 插件页管理。",
   "type": "module",
   "main": "./src/runtime.js",

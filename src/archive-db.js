@@ -26,17 +26,17 @@ export class ArchiveDatabase {
     const id=sessionId(header.id),identity=JSON.stringify(canonical({...header,delegationDepth:header.delegationDepth??0}))
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const prior=this.db.prepare('SELECT header,title FROM sl_sessions WHERE id=?').get(id)
+      const prior=this.db.prepare('SELECT header,title,updatedAt FROM sl_sessions WHERE id=?').get(id)
       if(prior&&JSON.stringify(canonical({...JSON.parse(prior.header),delegationDepth:JSON.parse(prior.header).delegationDepth??0}))!==identity)throw Error('会话来源身份改变，原记录保留')
       let title=prior?.title||header.meta?.title||header.title||id
-      let next=this.cursor(id)
-      for(const event of events){if(!Number.isSafeInteger(event.seq)||event.seq<0)throw Error('原文序号无效')
+      let next=this.cursor(id),updatedAt=prior?.updatedAt??header.createdAt??0
+      for(const event of events){if(Number.isFinite(event.time))updatedAt=Math.max(updatedAt,event.time);if(!Number.isSafeInteger(event.seq)||event.seq<0)throw Error('原文序号无效')
         if(event.type==='session/title'&&typeof event.data?.title==='string')title=event.data.title
         const raw=JSON.stringify(event),digest=hash(JSON.stringify(canonical(event))),saved=this.db.prepare('SELECT digest FROM sl_events WHERE session=? AND seq=?').get(id,event.seq)
         if(saved&&saved.digest!==digest)throw Error('原文已改变，拒绝覆盖归档')
         if(!saved){if(event.seq!==next)throw Error('原文序号不连续，拒绝遗漏归档');this.db.prepare('INSERT INTO sl_events VALUES(?,?,?,?,?,?,?)').run(id,event.seq,raw,digest,raw,estimateSummaryTokens(raw),+original(event));next++}
       }
-      this.db.prepare('INSERT INTO sl_sessions VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,updatedAt=excluded.updatedAt').run(id,String(title).slice(0,300),identity,Date.now())
+      this.db.prepare('INSERT INTO sl_sessions VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,updatedAt=excluded.updatedAt').run(id,String(title).slice(0,300),identity,updatedAt)
       this.db.exec('COMMIT')
     }catch(error){this.db.exec('ROLLBACK');throw error}
   }
