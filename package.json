@@ -1,7 +1,7 @@
 {
   "name": "SuperLcm",
   "version": "0.5.22",
-  "description": "DSH 独立插件：原文归档、后台分层摘要、精确召回与可选比例压缩。全部在 DSH 插件页管理。",
+  "description": "为 DSH 保存完整原文、生成后台分层摘要并精确召回。摘要和可选压缩均在插件设置页管理。",
   "type": "module",
   "main": "./src/runtime.js",
   "exports": {
@@ -25,7 +25,8 @@
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "cordis.patch.yml",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "docs/images/icon.svg"
   ],
   "dsh": {
     "bundle": {
