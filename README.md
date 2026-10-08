@@ -19,6 +19,8 @@ SuperLcm for DSH 为 **DeepSeek Harness（DSH）** 保存完整对话，在后�
 
 ## 从后台摘要开始
 
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/dsh-recall-zh-dark.gif"><img src="docs/images/dsh-recall-zh-light.gif" alt="流程示意：DSH 对话持续归档，原文分块成为摘要，摘要合并成上层目录，智能体沿目录读回原文中的端口决定。"></picture>
+
 原文归档持续运行。新安装时，后台摘要和压缩接管分别关闭；选择模型后，可以只开启后台摘要，继续由 DSH 原生机制处理上下文压缩。
 
 | 功能 | 在哪里设置 | 做什么 |
@@ -33,6 +35,8 @@ SuperLcm for DSH 为 **DeepSeek Harness（DSH）** 保存完整对话，在后�
 摘要帮助定位历史；精确数字、授权和重要结论通过原文核对。
 
 ## 可选：提前准备，到阈值再替换
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/dsh-compaction-zh-dark.gif"><img src="docs/images/dsh-compaction-zh-light.gif" alt="流程示意：开启可选接管后，后台准备并合并摘要，达到所选比例时固定范围，就绪后一次替换较旧内容，最近原文继续保留。"></picture>
 
 开启 SuperLcm 压缩接管后，引擎在后台准备摘要，达到所选比例并且摘要就绪后，一次替换固定范围内的较旧上下文。近期原文继续保留，完整历史仍可召回。
 

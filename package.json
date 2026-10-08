@@ -26,7 +26,8 @@
     "THIRD_PARTY_NOTICES.md",
     "cordis.patch.yml",
     "CHANGELOG.md",
-    "docs/images/icon.svg"
+    "docs/images/icon.svg",
+    "docs/images/*.gif"
   ],
   "dsh": {
     "bundle": {

@@ -19,6 +19,8 @@ This is the standalone DSH edition. For a shared archive across Claude Code, Cod
 
 ## Start with background summaries
 
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/dsh-recall-en-dark.gif"><img src="docs/images/dsh-recall-en-light.gif" alt="Illustration: archive DSH originals, summarize source segments, merge an outline, then read the original deployment-port decision."></picture>
+
 Original archiving runs with the plugin. On a fresh installation, summarization and compaction takeover are independently off. Select a model and enable background summaries while DSH continues to handle native compaction.
 
 | Feature | Control | Purpose |
@@ -33,6 +35,8 @@ Source segments default to approximately **20K tokens**. At least four adjacent 
 Summaries locate history. Exact numbers, authorizations and consequential decisions should be checked against the originals.
 
 ## Optional: prepare ahead, replace at the threshold
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/dsh-compaction-en-dark.gif"><img src="docs/images/dsh-compaction-en-light.gif" alt="Illustration: with optional takeover enabled, prepare and merge in the background, fix the range at the chosen threshold, then commit once and retain recent originals."></picture>
 
 When takeover is enabled, the engine prepares summaries in the background and commits a fixed older range once the selected threshold is reached and that range is ready. Recent originals remain in context, and complete history remains available through recall.
 
