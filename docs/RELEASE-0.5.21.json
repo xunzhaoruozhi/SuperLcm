@@ -2,7 +2,7 @@
   "release": "0.5.21",
   "date": "2026-10-08",
   "hostVersion": "0.2.1-alpha.1",
-  "regressionTests": 40,
+  "regressionTests": 39,
   "review": {
     "independent": true,
     "findingsClosed": [

@@ -16,7 +16,7 @@ Build with `npm pack`, then install the archive through the official DSH CLI:
 dsh plugin --profile web add /absolute/path/SuperLcm-0.5.21.tgz
 ```
 
-Restart the profile and open **Plugins → SuperLcm**. The UI provides conversations, summary settings, and compaction settings. Provider/model selections use DSH's existing registry.
+Restart the profile and open **Plugins → SuperLcm**. The UI provides only summary and compaction settings. Archived history is queried through recall tools. Provider/model selections use DSH's existing registry.
 
 If using the shared SuperLcm-Claude-Recall global DSH integration, disconnect DSH there before installing this standalone bundle. Retire custom old patches that separately mount the tools or engine; use one bundle.
 

@@ -5,7 +5,7 @@
 - Deploy native DSH settings UI in place of the external console bridge.
 - Import DSH originals and existing summary trees from the shared archive without model calls; reject conflicting node content or references instead of overwriting them.
 - Correct native ready-node visibility, semantic levels and session summary counts.
-- Open summary settings first; fetch conversation history only when requested.
+- Show only summary and compaction settings in the plugin UI; retain archive recall tools.
 - Read persisted cold tails incrementally and preserve real session activity times.
 
 ## 0.5.20 — 2026-10-07

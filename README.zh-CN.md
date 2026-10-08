@@ -2,7 +2,7 @@
 
 [English](./README.en.md) · [设计](./docs/ARCHITECTURE.md) · [验证](./docs/VALIDATION.md)
 
-**DSH 独立插件：保存完整原文，在后台生成分层摘要，需要时精确召回。**会话、摘要模型和可选压缩接管都在 DSH 自己的插件页管理。无需 SuperLcm Web 后台。
+**DSH 独立插件：保存完整原文，在后台生成分层摘要，需要时精确召回。**摘要模型和可选压缩接管都在 DSH 自己的插件设置页管理。无需 SuperLcm Web 后台。
 
 当前版本 **0.5.21**，移植自 [SuperLcm-Claude-Recall](https://github.com/yu381792/SuperLcm-Claude-Recall) 的 0.5.20 DSH 引擎。只支持 DSH，保留旧版 `SuperLcm` 包名和数据库路径。
 
@@ -18,7 +18,6 @@ dsh plugin --profile web add /absolute/path/SuperLcm-0.5.21.tgz
 
 重启对应 DSH 宿主，在「插件 → SuperLcm」管理界面进入：
 
-- **对话**：搜索会话、导入历史、查看摘要、读取完整原文。
 - **摘要设置**：选择 DSH 已配置的模型，开启后台摘要，设置分块大小和摘要合并段数。
 - **压缩**：可选接管，单独选择压缩模型和触发百分比。
 
@@ -37,6 +36,8 @@ dsh plugin --profile web add /absolute/path/SuperLcm-0.5.21.tgz
 数据库优先使用 `DSH_SUPERLCM_DB`，兼容旧 `DSH_LOSSLESS_DB`；默认 `$DSH_HOME/SuperLcm/lcm.sqlite`，未设置 `DSH_HOME` 时用 `~/.dsh`。旧 `lossless-context/lcm.sqlite` 作为迁移兼容入口。
 
 归档保留完整结构化事件。设置和数据库留在本机，模型请求通过 DSH 已配置的供应商发送。长输入的摘要请求可能使用明确标注的片段，完整原文仍可查询。
+
+插件设置页只提供摘要设置和压缩设置，历史查询通过召回工具完成。
 
 新增后台归档工具：`lcm_outline`、`lcm_read`、`lcm_find`。保留旧版 `lcm_grep`、`lcm_describe`、`lcm_expand`、`lcm_reindex`、`lcm_expand_query`、`lcm_doctor`，用于压缩节点与原始事件召回。
 

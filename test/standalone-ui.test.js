@@ -18,21 +18,10 @@ const catalog = [
     { id: 'compression-1', label: '压缩模型一' }, { id: 'compression-2', label: '压缩模型二' },
   ] },
 ];
-const sessions = [
-  { id: 'a', title: '会话甲', eventCount: 30, summaryCount: 1 },
-  { id: 'b', title: '会话乙', eventCount: 70, summaryCount: 1 },
-];
-
-function deferred() {
-  let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve: (value) => resolve({ ok: true, value }) };
-}
-
 // Render the actual bundle with isolated hook state and explicit effect cleanup.
 // All transport responses are local fixtures; unknown operations fail the test.
 function createClient({ settings = {}, runtime = {} } = {}) {
-  const instances = new Map(), calls = [], outlineRequests = [], eventRequests = [];
+  const instances = new Map(), calls = [];
   let active, hookIndex, effects = [], mounted = new Set(), tree, bundle, Form, registration;
   let snapshot = {
     version: 'test', revision: 1, settings: { ...initialSettings, ...settings }, catalog,
@@ -77,14 +66,6 @@ function createClient({ settings = {}, runtime = {} } = {}) {
         snapshot = { ...snapshot, revision: snapshot.revision + 1, settings: structuredClone(payload.settings),
           runtime: { ...snapshot.runtime, takeover: payload.settings.takeover, mode: payload.settings.takeover ? 'superlcm' : 'native' } };
         return { ok: true, value: structuredClone(snapshot) };
-      case 'sessions': return { ok: true, value: { items: structuredClone(sessions), hasMore: false } };
-      case 'outline': {
-        const response = deferred(); outlineRequests.push({ payload, ...response }); return response.promise;
-      }
-      case 'read-events': {
-        const response = deferred(); eventRequests.push({ payload, ...response }); return response.promise;
-      }
-      case 'find': return { ok: true, value: { items: [{ session: payload.session, seq: 2, text: '原文搜索结果' }], next: null } };
       default: assert.fail(`Unexpected operation: ${method}`);
     }
   } } };
@@ -159,24 +140,14 @@ function createClient({ settings = {}, runtime = {} } = {}) {
     const input = nodes(container).find((node) => node.type === 'input' && node.props.type === 'checkbox');
     assert.ok(input && !input.props.disabled); input.props.onChange({ target: { checked } }); await settle();
   }
-  async function selectSession(title) {
-    await click("对话");
-    const node = find((item) => item.type === 'button' && text(item).startsWith(title), title);
-    node.props.onClick(); await settle();
-  }
   render();
   return {
-    plugin, registration, connection, calls, outlineRequests, eventRequests, button, nodes, text,
-    settle, click, change, toggle, selectSession,
+    plugin, registration, connection, calls, button, nodes, text,
+    settle, click, change, toggle,
     get snapshot() { return snapshot; },
     get lastSave() { return calls.filter((call) => call.method === 'save').at(-1)?.payload; },
     failSave(error) { saveError = error; },
     setRevision(revision) { snapshot = { ...snapshot, revision }; },
-    async search(query) {
-      await change('搜索当前会话原文', query);
-      find((node) => node.type === 'form' && text(node).includes('搜索原文'), 'search form')
-        .props.onSubmit({ preventDefault() {} }); await settle();
-    },
     dispose() { for (const instance of instances.values()) disposeInstance(instance); instances.clear(); },
   };
 }
@@ -185,20 +156,16 @@ async function mount(t, options) {
   const app = createClient(options); t.after(() => app.dispose()); await app.settle(); return app;
 }
 
-function outline(session, summary, first = 0) {
-  return { session, title: session, nodes: [{ id: session + '-node', level: 0, first, last: first + 2, summary, children: [] }], total: 70, uncovered: 3 };
-}
-
 test('native plugin registers the actual client with the authenticated host connection', async (t) => {
   const app = await mount(t);
   assert.equal(app.registration.inject().connection, app.connection);
   assert.equal(app.calls[0].method, 'read');
-  assert.match(app.text(), /对话摘要设置压缩/);
+  assert.match(app.text(), /摘要设置压缩/);
+  assert.deepEqual(app.nodes().filter(node=>node.props?.role==='tab').map(node=>app.text(node)),['摘要设置','压缩']);
   assert.match(app.text(), /启用后台分层摘要/);
   assert.deepEqual(app.calls.map((call) => call.method), ['read']);
-  await app.click('对话');
-  assert.match(app.text(), /会话甲/);
-  assert.deepEqual(app.calls.map((call) => call.method), ['read', 'sessions']);
+  await app.click('压缩');
+  assert.deepEqual(app.calls.map((call) => call.method), ['read']);
 });
 
 test('summary and compression retain independent switches, models and chunk sizes', async (t) => {
@@ -290,22 +257,4 @@ test('revision conflict refreshes the revision while retaining the local draft',
   app.failSave(null); await app.click('保存');
   assert.equal(app.lastSave.revision, 7);
   assert.equal(app.lastSave.settings.chunkTokens, 10000);
-});
-
-test('late outlines and original-event responses cannot overwrite a newly selected session', async (t) => {
-  const app = await mount(t);
-  await app.selectSession('会话甲'); const oldOutline = app.outlineRequests.at(-1);
-  await app.selectSession('会话乙'); app.outlineRequests.at(-1).resolve(outline('b', '乙的摘要', 42)); await app.settle();
-  oldOutline.resolve(outline('a', '过期的甲摘要')); await app.settle();
-  assert.match(app.text(), /乙的摘要/); assert.doesNotMatch(app.text(), /过期的甲摘要/);
-  await app.click('从这段开始阅读原文'); const oldEvents = app.eventRequests.at(-1);
-  assert.deepEqual(structuredClone(oldEvents.payload), { session: 'b', offset: 42, limit: 20 });
-  await app.selectSession('会话甲'); app.outlineRequests.at(-1).resolve(outline('a', '新的甲摘要')); await app.settle();
-  await app.click('展开原文');
-  app.eventRequests.at(-1).resolve({ items: [{ seq: 0, type: 'message', text: '甲的当前原文' }], next: null }); await app.settle();
-  oldEvents.resolve({ items: [{ seq: 42, type: 'message', text: '过期的乙原文' }], next: 65 }); await app.settle();
-  assert.match(app.text(), /甲的当前原文/); assert.doesNotMatch(app.text(), /过期的乙原文/);
-  assert.equal(app.nodes().some((node) => node.type === 'button' && app.text(node) === '继续阅读下一段'), false);
-  await app.search('词'); assert.match(app.text(), /原文搜索结果/);
-  assert.deepEqual(app.calls.at(-1), { method: 'find', payload: { session: 'a', query: '词', offset: 0, limit: 20 } });
 });
