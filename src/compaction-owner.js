@@ -1,8 +1,7 @@
 import Basic from '@deepseek-ai/dsh-compaction-basic'
 import Engine from './engine.js'
 import { readControls } from './controls-config.js'
-import { SuperLcmStore, resolveDatabasePath } from './store.js'
-import { join } from 'node:path'
+import { SuperLcmStore, resolveConfiguredDatabasePath } from './store.js'
 
 function cancellable(promise, signal) {
   if (!signal) return promise
@@ -134,7 +133,7 @@ export async function mountCompactionOwner(ctx, config = {}) {
       if (!document.config.auto) throw error
     }
     if (!enabled) {
-      store = new SuperLcmStore(config.archiveHome ? join(config.archiveHome, 'lcm.sqlite') : resolveDatabasePath())
+      store = new SuperLcmStore(resolveConfiguredDatabasePath(config))
       reporter = store.compressionReporter({ kind: 'engine', profile: ctx.get?.('profileContext')?.name || null,
         enabled: false, routeReady: true, onError: () => ctx.logger?.warn?.('DSH 原生压缩状态写入失败') })
       if (document.config.auto === false&&!document.invalid) reporter.applied(document.revision)

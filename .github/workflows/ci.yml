@@ -3,6 +3,7 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -21,9 +22,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
       - run: npm ci --ignore-scripts
       - run: npm run validate
-      - run: npm pack --dry-run
+      - run: npm run test:install

@@ -54,3 +54,34 @@ test('identical native nodes migrate repeatedly without changing their metadata 
  assert.equal((await importSharedDshArchive(source,destination)).nativeNodes,1)
  const after=new SuperLcmStore(destination);assert.deepEqual(after.getNode('one','n'),before);after.close()
 })
+
+test('upgrade recovers misplaced compaction nodes only for known sessions without overwriting or moving files',async()=>{
+ const {recoverMisplacedNodes}=await import('../src/upgrade-store.js')
+ const dir=mkdtempSync(join(tmpdir(),'sl-sidecar-')),path=join(dir,'custom.sqlite'),old=new SuperLcmStore(join(dir,'lcm.sqlite')),target=new SuperLcmStore(path),archive=new ArchiveDatabase(path)
+ archive.capture({id:'known'},[{seq:0,time:1,type:'user/message',data:{content:'Retained original'}}]);archive.close()
+ old.upsertNode({sessionId:'known',nodeId:'draft',createdAt:1,summaryText:'Prepared facts',sourceSeqs:[0],status:'ready'})
+ old.saveDraft('known','input-fingerprint',JSON.stringify({checkpoint:'Prepared state'}))
+ old.blockSummary('known','rejected-input')
+ old.upsertNode({sessionId:'other',nodeId:'other',createdAt:1,summaryText:'Other database facts',sourceSeqs:[0],status:'ready'})
+ old.close()
+ const recovered=recoverMisplacedNodes(target);assert.equal(recovered.recovered,1);assert.equal(recovered.drafts,1);assert.equal(target.loadDraft('known').fingerprint,'input-fingerprint');assert.equal(target.summaryBlocked('known','rejected-input'),true);assert.equal(target.getNode('known','draft').summaryText,'Prepared facts');assert.equal(target.getNode('other','other'),null)
+ assert.equal(recoverMisplacedNodes(target).recovered,0)
+ target.finishDraft('known','committed');assert.equal(recoverMisplacedNodes(target).conflicts,1);assert.equal(target.loadDraft('known'),null)
+ target.upsertNode({...target.getNode('known','draft'),summaryText:'Corrected chosen facts'})
+ assert.equal(recoverMisplacedNodes(target).conflicts,1);assert.equal(target.getNode('known','draft').summaryText,'Corrected chosen facts')
+ target.close();const preserved=new SuperLcmStore(join(dir,'lcm.sqlite'));assert.equal(preserved.getNode('known','draft').summaryText,'Prepared facts');preserved.close()
+})
+
+test('upgrade recovery cannot overwrite a node or draft concurrently written by another host',async()=>{
+ const {recoverMisplacedNodes}=await import('../src/upgrade-store.js')
+ const dir=mkdtempSync(join(tmpdir(),'sl-upgrade-race-')),path=join(dir,'custom.sqlite'),old=new SuperLcmStore(join(dir,'lcm.sqlite')),target=new SuperLcmStore(path),writer=new SuperLcmStore(path),archive=new ArchiveDatabase(path)
+ archive.capture({id:'known'},[{seq:0,time:1,type:'user/message',data:{content:'Original'}}]);archive.close()
+ const prior={sessionId:'known',nodeId:'race',createdAt:1,summaryText:'Old facts',sourceSeqs:[0],status:'ready'}
+ old.upsertNode(prior);old.saveDraft('known','old','old prepared state');old.close()
+ const insert=target.insertNodeIfMissing.bind(target),draft=target.saveDraftIfMissing.bind(target)
+ target.insertNodeIfMissing=node=>{writer.upsertNode({...prior,summaryText:'New chosen facts'});return insert(node)}
+ target.saveDraftIfMissing=(...args)=>{writer.saveDraft('known','new','new prepared state');return draft(...args)}
+ const result=recoverMisplacedNodes(target);assert.equal(result.recovered,0);assert.equal(result.drafts,0);assert.equal(result.conflicts,2)
+ assert.equal(target.getNode('known','race').summaryText,'New chosen facts');assert.equal(target.loadDraft('known').fingerprint,'new')
+ writer.close();target.close()
+})

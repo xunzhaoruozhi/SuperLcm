@@ -13,8 +13,7 @@ import { carryPrefix, buildDraftTree, assembleTree, draftTokens, summaryBudget, 
 import { selectionPricing } from './selection-pricing.js'
 import { selectSummaryCondensation } from './summary-prefix.js'
 import { SessionFoldRegistry, SummaryGuards } from './summary-guards.js'
-import { SuperLcmStore, resolveDatabasePath } from './store.js'
-import { join } from 'node:path'
+import { SuperLcmStore, resolveConfiguredDatabasePath } from './store.js'
 import { summaryContext } from './summary-model.js'
 import { summarizeWithRecall } from './engine-summary.js'
 import { readControls, controlsConfig } from './controls-config.js'
@@ -46,7 +45,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     this.rollingConfig = rolling
     ctx.logger?.info?.('SuperLcm：已启用后台分批组装，达到压缩门槛后一次替换上下文')
     this.fallbackSummarizationRoute = fallbackRoute
-    this.superLcmStore = new SuperLcmStore(config.archiveHome ? join(config.archiveHome,'lcm.sqlite') : resolveDatabasePath())
+    this.superLcmStore = new SuperLcmStore(resolveConfiguredDatabasePath(config))
     this.compressionReporter = this.superLcmStore.compressionReporter({
       kind: 'engine', profile: ctx.get?.('profileContext')?.name || null,
       enabled: this.config.auto === true,

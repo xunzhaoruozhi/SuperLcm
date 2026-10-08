@@ -9,6 +9,7 @@ const FALLBACK_CONFIG_KEYS = new Set(['fallbackSummarizationProvider', 'fallback
 const ROLLING_CONFIG_KEYS = new Set([
   'budgetMode','prepareRatio','switchRatio','emergencyRatio',
   'archiveHome',
+  'databasePath',
   'controlFile',
   'summaryAdapter',
   'runtimeTuning',

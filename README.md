@@ -4,16 +4,16 @@
 
 **DSH 独立插件：保存完整原文，在后台生成分层摘要，需要时精确召回。**摘要模型和可选压缩接管都在 DSH 自己的插件设置页管理。无需 SuperLcm Web 后台。
 
-当前版本 **0.5.21**，移植自 [SuperLcm-Claude-Recall](https://github.com/yu381792/SuperLcm-Claude-Recall) 的 0.5.20 DSH 引擎。只支持 DSH，保留旧版 `SuperLcm` 包名和数据库路径。
+当前版本 **0.5.22**，移植自 [SuperLcm-Claude-Recall](https://github.com/yu381792/SuperLcm-Claude-Recall) 的 0.5.20 DSH 引擎。只支持 DSH，保留旧版 `SuperLcm` 包名和数据库路径。
 
 ## 安装
 
 要求 Node.js **22.16+**。本版实测宿主为 **DSH 0.2.1-alpha.1**。
 
-下载或在本仓库执行 `npm pack`，得到 `SuperLcm-0.5.21.tgz`。使用 DSH 官方安装命令：
+下载或在本仓库执行 `npm pack`，得到 `SuperLcm-0.5.22.tgz`。使用 DSH 官方安装命令：
 
 ```sh
-dsh plugin --profile web add /absolute/path/SuperLcm-0.5.21.tgz
+dsh plugin --profile web add /absolute/path/SuperLcm-0.5.22.tgz
 ```
 
 重启对应 DSH 宿主，在「插件 → SuperLcm」管理界面进入：

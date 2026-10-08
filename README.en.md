@@ -4,7 +4,7 @@
 
 A standalone DSH plugin for complete event archiving, detached hierarchical summaries, exact recall, and optional context compaction. All controls live in the native DSH plugin UI. No separate SuperLcm server is required.
 
-Version **0.5.21** ports the DSH engine from the SuperLcm-Claude-Recall 0.5.20 release. The legacy package name `SuperLcm` and database locations remain compatible.
+Version **0.5.22** ports the DSH engine from the SuperLcm-Claude-Recall 0.5.20 release. The legacy package name `SuperLcm` and database locations remain compatible.
 
 ## Install
 
@@ -13,7 +13,7 @@ Node.js 22.16+ is required. Tested with DSH 0.2.1-alpha.1.
 Build with `npm pack`, then install the archive through the official DSH CLI:
 
 ```sh
-dsh plugin --profile web add /absolute/path/SuperLcm-0.5.21.tgz
+dsh plugin --profile web add /absolute/path/SuperLcm-0.5.22.tgz
 ```
 
 Restart the profile and open **Plugins → SuperLcm**. The UI provides only summary and compaction settings. Archived history is queried through recall tools. Provider/model selections use DSH's existing registry.

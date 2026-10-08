@@ -19,7 +19,7 @@ function normalizeText(value) {
   return String(value ?? '').normalize('NFKC').toLocaleLowerCase()
 }
 
-function rowToNode(row) {
+export function rowToNode(row) {
   if (row === undefined) return null
   return {
     sessionId: row.session_id,
@@ -58,6 +58,13 @@ export function resolveDatabasePath(env = process.env) {
   const root=env.DSH_HOME?.trim()||join(homedir(),'.dsh')
   const current=resolve(root,'SuperLcm','lcm.sqlite'),legacy=resolve(root,'lossless-context','lcm.sqlite')
   return !existsSync(current)&&existsSync(legacy)?legacy:current
+}
+
+// Internal runtime location keeps every store on the exact selected filename.
+// archiveHome remains compatible with older direct engine configurations.
+export function resolveConfiguredDatabasePath(config = {}, env = process.env) {
+  if (typeof config.databasePath === 'string' && config.databasePath.trim()) return resolve(config.databasePath)
+  return config.archiveHome ? resolve(config.archiveHome, 'lcm.sqlite') : resolveDatabasePath(env)
 }
 
 export class SuperLcmStore {
@@ -159,7 +166,9 @@ export class SuperLcmStore {
     return this.#db.prepare('SELECT header FROM dsh_mirrors').all().map(row => JSON.parse(row.header).id)
   }
 
-  upsertNode(node) {
+  insertNodeIfMissing(node) { return this.upsertNode(node, {onlyIfAbsent:true}) }
+
+  upsertNode(node, {onlyIfAbsent=false} = {}) {
     this.#assertOpen()
     const childIds = [...new Set(node.childIds ?? [])]
     const sourceSeqs = [...new Set(node.sourceSeqs ?? [])]
@@ -169,6 +178,7 @@ export class SuperLcmStore {
 
     this.#db.exec('BEGIN IMMEDIATE')
     try {
+      if(onlyIfAbsent){const prior=this.getNode(node.sessionId,node.nodeId);if(prior){this.#db.exec('COMMIT');return {node:prior,inserted:false}}}
       this.#db.prepare(`
         INSERT INTO lcm_nodes(
           session_id, node_id, compaction_id, summary_seq, created_at,
@@ -227,7 +237,8 @@ export class SuperLcmStore {
       this.#db.exec('ROLLBACK')
       throw error
     }
-    return this.getNode(node.sessionId, node.nodeId)
+    const saved=this.getNode(node.sessionId, node.nodeId)
+    return onlyIfAbsent ? {node:saved,inserted:true} : saved
   }
 
   indexCursor(sessionId) {
@@ -383,11 +394,20 @@ export class SuperLcmStore {
     return !!this.#db.prepare('SELECT 1 FROM lcm_summary_blocks WHERE session_id=? AND fingerprint=?').get(sessionId,fingerprint)
   }
 
+  saveDraftIfMissing(sessionId, fingerprint, data) {
+    this.#assertOpen()
+    return this.#db.prepare("INSERT INTO lcm_compaction_drafts VALUES (?,?,?,'ready',?) ON CONFLICT(session_id) DO NOTHING").run(sessionId,fingerprint,data,Date.now()).changes===1
+  }
   saveDraft(sessionId, fingerprint, data) {
     this.#assertOpen()
     this.#db.prepare(`INSERT INTO lcm_compaction_drafts VALUES (?,?,?,'ready',?)
       ON CONFLICT(session_id) DO UPDATE SET fingerprint=excluded.fingerprint,
       data_json=excluded.data_json,status='ready',updated_at=excluded.updated_at`).run(sessionId,fingerprint,data,Date.now())
+  }
+  draftRecord(sessionId) {
+    this.#assertOpen()
+    const row=this.#db.prepare('SELECT fingerprint,data_json,status FROM lcm_compaction_drafts WHERE session_id=?').get(sessionId)
+    return row ? {fingerprint:row.fingerprint,data:row.data_json,status:row.status} : null
   }
   loadDraft(sessionId) {
     this.#assertOpen()
