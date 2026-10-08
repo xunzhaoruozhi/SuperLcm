@@ -30,7 +30,8 @@
   "windows": {
     "workflowConfigured": true,
     "executed": false,
-    "blocker": "Repository Actions disabled; enabling awaits user authorization"
+    "blocker": "User chose to keep repository Actions disabled; Windows execution not performed",
+    "userDecision": "Keep disabled; audit report only"
   },
   "modelCallsForVerification": 0,
   "productionRestarted": false
